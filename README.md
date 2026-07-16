@@ -1,105 +1,146 @@
 # NoxPhisher
-**Reconocimiento pasivo de visitantes** — IPv4 + IPv6 + QR + Deduplicación + SQLite  
-by [@nostraxiten](https://github.com/nostraxiten)
 
-> El autor no se responsabiliza del uso indebido de esta herramienta.
+> **Auditoría de privacidad y reconocimiento pasivo de visitantes con integración de túneles automatizados**
 
----
-
-## ¿Qué hace?
-
-Al acceder al enlace generado, el visitante ve una pantalla de carga y es redirigido a Google. En ese intervalo la herramienta captura en segundo plano:
-
-- IP pública real vía `CF-Connecting-IP`
-- IP privada local IPv4 e IPv6 vía WebRTC leak
-- Geolocalización: país, región, ciudad, coordenadas, ISP, ASN
-- Fingerprint del dispositivo: navegador, SO, pantalla, RAM, núcleos de CPU
-- Fecha y hora exacta de cada captura
-
-Todo queda guardado automáticamente en `captures.db` (SQLite).
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Database](https://img.shields.io/badge/Database-SQLite-003B57.svg?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Tunnel](https://img.shields.io/badge/Tunneling-Cloudflared-F38020.svg?style=for-the-badge&logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+[![Platform Support](https://img.shields.io/badge/Platform-Linux%20%7C%20Android%20(Termux)-lightgrey.svg?style=for-the-badge&logo=android)](https://github.com/nostraxiten/NoxPhisher)
 
 ---
 
-## Requisitos
+## Descripcion General
 
-- Python 3.8+
-- [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) instalado y en el PATH
-- Termux (Android) o cualquier sistema Linux
+**NoxPhisher** es un framework de reconocimiento pasivo diseñado para auditar la exposicion de datos en navegadores web. Al acceder al enlace generado por la herramienta, el visitante visualiza una pantalla de carga simulada antes de ser redirigido automaticamente a un destino seguro (por defecto, Google). 
+
+Durante este intervalo, la aplicacion recopila informacion de red, localizacion y caracteristicas del hardware a traves de vulnerabilidades conocidas y metodos de extraccion pasiva en el navegador, consolidando toda la informacion en una base de datos local SQLite.
 
 ---
 
-## Instalación
+## Flujo de Captura y Redireccion
 
-```bash
-# Clonar el repositorio
-git clone https://github.com/nostraxiten/NoxPhisher
-cd NoxPhisher
+El siguiente diagrama detalla la secuencia de ejecucion desde que el visitante hace clic en el enlace hasta el registro definitivo en la base de datos:
 
-# Instalar dependencias
-pip install -r requirements.txt --break-system-packages
+```mermaid
+graph TD
+    A[Visitante hace clic en enlace] --> B[Visualizacion de Pantalla de Carga Decoy]
+    B --> C[Extraccion de Datos del Navegador]
+    C --> C1[IP Local WebRTC Leak]
+    C --> C2[Dispositivo & Hardware Fingerprint]
+    C --> C3[IP Publica via Cloudflare Header]
+    
+    C1 & C2 & C3 --> D[Envio de Datos a noxphisher.py]
+    D --> E[Filtro de Deduplicacion SQLite]
+    
+    E -->|Nuevo Registro| F[Guardar en captures.db e Imprimir en Terminal]
+    E -->|Duplicado en Ventana Temporal| G[Descartar / Omitir Almacenamiento]
+    
+    F & G --> H[Redireccion Inmediata a Google.com]
 ```
 
 ---
 
-## Uso
+## Vectores de Captura Tecnicos
 
+NoxPhisher recopila de forma pasiva los siguientes parametros sin requerir interaccion adicional del usuario:
+
+*   **Identificacion de Red:** 
+    *   Direccion IP publica real a traves de la cabecera `CF-Connecting-IP`.
+    *   Filtro y deteccion de direcciones locales privadas (IPv4 e IPv6) mediante el protocolo WebRTC (WebRTC leak).
+*   **Geolocalizacion Avanzada:** Pais, region, ciudad, coordenadas geograficas precisas (latitud/longitud), Proveedor de Servicios de Internet (ISP) y Sistema Autonomo (ASN).
+*   **Huella Digital del Hardware (Fingerprint):** Nombre e identificador del navegador, sistema operativo del host, resolucion de pantalla, memoria RAM disponible y numero de nucleos logicos de la CPU.
+*   **Registro de Auditoria:** Marca de tiempo exacta con precision UTC.
+
+---
+
+## Requisitos de Sistema
+
+*   **Entorno:** Python 3.8 o superior.
+*   **Dependencia Binaria:** [Cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) instalado y accesible desde las variables de entorno del sistema (PATH).
+*   **Sistemas Compatibles:** Distribuciones basadas en Linux o entornos Android utilizando la aplicacion Termux.
+
+---
+
+## Instalacion y Despliegue
+
+### 1. Clonar el repositorio
+```bash
+git clone https://github.com/nostraxiten/NoxPhisher
+cd NoxPhisher
+```
+
+### 2. Instalar dependencias necesarias
+```bash
+pip install -r requirements.txt --break-system-packages
+```
+
+> [!NOTE]
+> En entornos Linux recientes, puede ser necesario el uso del flag `--break-system-packages` para evitar colisiones con el gestor de paquetes de la distribucion.
+
+---
+
+## Parametros y Opciones de Uso
+
+Para consultar el menu de ayuda en linea:
 ```bash
 python noxphisher.py -h
 ```
 
-### Opciones
+### Tabla de Opciones CLI
 
-| Flag | Descripción | Por defecto |
-|------|-------------|-------------|
-| `--qr` | Genera un QR del enlace en la terminal | Desactivado |
-| `--window N` | Ventana de deduplicación en segundos | `60` |
-| `--port N` | Puerto del servidor local | `8080` |
-| `--view [N]` | Ver las últimas N capturas sin levantar el servidor | `50` |
+| Argumento CLI | Descripcion | Valor por Defecto |
+| :--- | :--- | :---: |
+| `--qr` | Genera y muestra un codigo QR del enlace del tunel directamente en la terminal. | Desactivado |
+| `--window N` | Establece el tiempo en segundos para considerar un registro duplicado (deduplicacion). | `60` |
+| `--port N` | Especifica el puerto de escucha del servidor local. | `8080` |
+| `--view [N]` | Consulta y muestra en terminal las ultimas N capturas de la base de datos sin iniciar el servidor. | `50` |
 
-### Ejemplos
+### Ejemplos Practicos de Ejecucion
 
 ```bash
-# Ejecución básica
+# Lanzamiento estandar del servidor y tunel
 python noxphisher.py
 
-# Con QR generado en terminal
+# Iniciar servidor mostrando el codigo QR para dispositivos moviles
 python noxphisher.py --qr
 
-# Puerto y ventana de deduplicación personalizados
+# Cambiar el puerto de escucha y configurar una ventana de deduplicacion de 5 minutos (300s)
 python noxphisher.py --port 9090 --window 300
 
-# Ver las últimas 20 capturas
+# Consultar las ultimas 20 capturas almacenadas en la base de datos local
 python noxphisher.py --view 20
 ```
 
 ---
 
-## Estructura
+## Estructura del Proyecto
 
-```
+```text
 NoxPhisher/
-├── noxphisher.py       # Script principal
-├── requirements.txt    # Dependencias Python
-├── captures.db         # Base de datos SQLite (se genera al ejecutar)
+├── noxphisher.py       # Script principal y servidor HTTP
+├── requirements.txt    # Listado de librerias Python requeridas
+├── captures.db         # Base de datos SQLite (generada automaticamente)
 └── grabber_web/
-    └── index.html      # Página servida al visitante
+    └── index.html      # Plantilla web servida con los scripts de extraccion
 ```
 
 ---
 
-## Output de captura
+## Formato del Log de Captura
 
-```
+Cuando se registra una visita valida, el servidor imprime en consola los detalles con el siguiente formato:
+
+```text
 ======================================================================
-[!] CAPTURA #1 [2026-01-01 12:00:00]
+CAPTURA #1 [2026-01-01 12:00:00]
 ======================================================================
-  IP Pública:   198.51.100.42 (IPv4)
+  IP Publica:   198.51.100.42 (IPv4)
   IP Privada:   192.168.1.105
-  País:         Germany
-  Región:       Bavaria
+  Pais:         Germany
+  Region:       Bavaria
   Ciudad:       Munich
   ISP:          Deutsche Telekom AG
-  Organización: Telekom Deutschland GmbH
+  Organizacion: Telekom Deutschland GmbH
   AS:           AS3320 Deutsche Telekom AG
   Coordenadas:  48.1351, 11.5820
   Google Maps:  https://www.google.com/maps?q=48.1351,11.5820
@@ -108,30 +149,21 @@ NoxPhisher/
   Pantalla:     1920x1080
   Plataforma:   Win32
   RAM:          16GB
-  Núcleos:      8
+  Nucleos:      8
 ======================================================================
 ```
 
 ---
 
-## Notas técnicas
+## Notas de Implementacion y Detalles Tecnicos
 
-- El tunnel se genera automáticamente con `cloudflared` — sin cuenta ni autenticación
-- La deduplicación combina IP pública + fingerprint para evitar duplicados por recarga
-- La notificación en Termux requiere `termux-api` instalado
-- `cloudflared` no va en `requirements.txt` — se instala como binario aparte
-
----
-
-## Dependencias
-
-```
-requests
-qrcode
-pillow
-```
+*   **Gestion de Tuneles:** El tunel publico se levanta de forma dinamica llamando al ejecutable `cloudflared` local. No se requiere inicio de sesion ni cuenta previa en la plataforma de Cloudflare.
+*   **Logica de Deduplicacion:** Para evitar la saturacion de logs por recargas continuas de la pagina, la herramienta implementa una clave compuesta (IP Publica + Fingerprint). Si una clave ya existe dentro de la ventana de tiempo configurada (`--window`), el registro es descartado de la base de datos.
+*   **Integracion con Termux:** Para recibir notificaciones push en Android, se requiere tener instalado el paquete del sistema `termux-api`.
 
 ---
 
-*NoxPhisher — parte de la suite de [@nostraxiten](https://github.com/nostraxiten)*
+## Descargo de Responsabilidad (Disclaimer)
 
+> [!WARNING]
+> Este software esta diseñado exclusivamente para pruebas de concepto de ingenieria social autorizadas, auditorias internas de seguridad y analisis de privacidad en navegadores. El autor no asume responsabilidad alguna por usos ilicitos, accesos no autorizados o daños causados directa o indirectamente por este codigo. La utilizacion en entornos de produccion ajenos sin consentimiento expreso esta penada por la ley.
