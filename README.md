@@ -1,5 +1,8 @@
 # NoxPhisher
 
+> [!CAUTION]
+> **Aviso Legal:** Este software está diseñado EXCLUSIVAMENTE para pruebas de concepto de ingeniería social autorizadas, auditorías internas de seguridad y análisis de privacidad en navegadores. El autor no asume responsabilidad alguna por usos ilícitos, accesos no autorizados o daños causados directa o indirectamente por este código. La utilización en entornos de producción ajenos sin consentimiento expreso está penada por la ley.
+
 > **Auditoría de privacidad y reconocimiento pasivo de visitantes con integración de túneles automatizados**
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
@@ -57,7 +60,7 @@ NoxPhisher recopila de forma pasiva los siguientes parametros sin requerir inter
 
 *   **Entorno:** Python 3.8 o superior.
 *   **Dependencia Binaria:** [Cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) instalado y accesible desde las variables de entorno del sistema (PATH).
-*   **Sistemas Compatibles:** Distribuciones basadas en Linux o entornos Android utilizando la aplicacion Termux.
+*   **Sistemas Compatibles:** Windows, Distribuciones basadas en Linux o entornos Android utilizando la aplicacion Termux.
 
 ---
 
@@ -159,11 +162,4 @@ CAPTURA #1 [2026-01-01 12:00:00]
 
 *   **Gestion de Tuneles:** El tunel publico se levanta de forma dinamica llamando al ejecutable `cloudflared` local. No se requiere inicio de sesion ni cuenta previa en la plataforma de Cloudflare.
 *   **Logica de Deduplicacion:** Para evitar la saturacion de logs por recargas continuas de la pagina, la herramienta implementa una clave compuesta (IP Publica + Fingerprint). Si una clave ya existe dentro de la ventana de tiempo configurada (`--window`), el registro es descartado de la base de datos.
-*   **Integracion con Termux:** Para recibir notificaciones push en Android, se requiere tener instalado el paquete del sistema `termux-api`.
-
----
-
-## Descargo de Responsabilidad (Disclaimer)
-
-> [!WARNING]
-> Este software esta diseñado exclusivamente para pruebas de concepto de ingenieria social autorizadas, auditorias internas de seguridad y analisis de privacidad en navegadores. El autor no asume responsabilidad alguna por usos ilicitos, accesos no autorizados o daños causados directa o indirectamente por este codigo. La utilizacion en entornos de produccion ajenos sin consentimiento expreso esta penada por la ley.
+*   **Integracion con Termux / Notificaciones:** La herramienta utiliza `plyer` para enviar notificaciones nativas en Windows, Linux y macOS. En Termux se recomienda el paquete de API.
