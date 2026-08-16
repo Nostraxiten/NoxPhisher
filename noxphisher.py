@@ -748,26 +748,65 @@ def parse_tunnel_url(line):
             return m.group(0)
     return None
 
-def start_cloudflare_tunnel(port=8080):
+def start_cloudflare_tunnel(port=8080, timeout=30):
     cf_path = get_cloudflared_path()
     if not cf_path:
         return None, None
     try:
+        import threading
+        from queue import Queue, Empty
+
         cmd  = [cf_path, "tunnel", "--url", f"http://localhost:{port}"]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        url  = None
-        for _ in range(40):
-            line = proc.stdout.readline()
-            if line:
-                url = parse_tunnel_url(line)
-                if url:
-                    break
-            time.sleep(0.5)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1)
+
+        # Leemos la salida en un hilo para poder aplicar un timeout real:
+        # readline() bloquea, y cloudflared puede tardar en emitir la URL.
+        q = Queue()
+
+        def _reader(pipe, out_q):
+            try:
+                for ln in iter(pipe.readline, ''):
+                    out_q.put(ln)
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_reader, args=(proc.stdout, q), daemon=True)
+        t.start()
+
+        url = None
+        captured = []
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                line = q.get(timeout=1)
+            except Empty:
+                if proc.poll() is not None:
+                    break  # cloudflared terminó sin darnos URL
+                continue
+            captured.append(line.rstrip())
+            url = parse_tunnel_url(line)
+            if url:
+                break
+
         if url:
             return url, proc
+
+        # No hubo URL: mostramos la salida de cloudflared para diagnóstico.
         proc.terminate()
+        print(f"\n{Fore.RED}[!] Cloudflared no devolvió una URL de túnel.{Style.RESET_ALL}")
+        diag = [l for l in captured if l.strip()]
+        if diag:
+            print(f"{Fore.YELLOW}    Salida de cloudflared:{Style.RESET_ALL}")
+            for l in diag[-12:]:
+                print(f"      {l}")
+        print(f"{Fore.YELLOW}    Sugerencia: si ves errores de red o 'failed to request "
+              f"quick Tunnel', prueba con Ngrok (opción 2).{Style.RESET_ALL}")
+        time.sleep(3)
         return None, None
-    except Exception:
+    except Exception as e:
+        print(f"\n{Fore.RED}[!] Error iniciando túnel Cloudflare: {e}{Style.RESET_ALL}")
+        time.sleep(2)
         return None, None
 
 def start_ngrok_tunnel_native(port=8080):
