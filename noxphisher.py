@@ -601,59 +601,59 @@ def _download_file(url, dest):
                 sys.stdout.flush()
     print()
 
+def download_cloudflared_binary():
+    """Descarga el binario oficial más reciente de cloudflared en BIN_DIR.
+    En Termux se usa el binario de Linux/ARM en vez del paquete de 'pkg',
+    que suele estar desactualizado y provoca errores TLS en los túneles
+    rápidos ('remote error: tls: internal error')."""
+    env = detect_environment()
+    os.makedirs(BIN_DIR, exist_ok=True)
+    arch = platform.machine().lower()
+
+    if env in ('termux', 'linux', 'ish'):
+        if arch in ('x86_64', 'amd64'): suffix = 'amd64'
+        elif arch in ('aarch64', 'arm64'): suffix = 'arm64'
+        elif arch.startswith('arm'): suffix = 'arm'
+        else: suffix = 'amd64'
+        url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{suffix}'
+        dest = os.path.join(BIN_DIR, 'cloudflared')
+        _download_file(url, dest)
+        os.chmod(dest, 0o755)
+        return True
+
+    elif env == 'windows':
+        suffix = 'arm64' if arch == 'arm64' else 'amd64'
+        url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-{suffix}.exe'
+        dest = os.path.join(BIN_DIR, 'cloudflared.exe')
+        _download_file(url, dest)
+        return True
+
+    elif env == 'macos':
+        suffix = 'arm64' if arch == 'arm64' else 'amd64'
+        url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-{suffix}.tgz'
+        dest_tgz = os.path.join(BIN_DIR, 'cloudflared.tgz')
+        _download_file(url, dest_tgz)
+        import tarfile
+        with tarfile.open(dest_tgz) as tar:
+            tar.extractall(BIN_DIR)
+        os.remove(dest_tgz)
+        os.chmod(os.path.join(BIN_DIR, 'cloudflared'), 0o755)
+        return True
+
+    return False
+
 def ensure_cloudflared():
     if get_cloudflared_path():
         return True
 
     env = detect_environment()
-    os.makedirs(BIN_DIR, exist_ok=True)
     print(f"\n{Fore.YELLOW}[*] Instalando cloudflared para [{env}]...{Style.RESET_ALL}")
 
     try:
-        if env == 'termux':
-            subprocess.run(['pkg', 'install', 'cloudflared', '-y'], check=True, timeout=120)
-            return bool(shutil.which('cloudflared'))
-        
-        elif env == 'ish':
-            # Alpine linux base for iSH
+        if env == 'ish':
             print(f"{Fore.RED}[!] iSH requiere instalación manual de cloudflared vía apk si está disponible.{Style.RESET_ALL}")
             return False
-
-        elif env == 'windows':
-            arch = platform.machine().lower()
-            if arch in ('amd64', 'x86_64'): suffix = 'amd64'
-            elif arch == 'arm64': suffix = 'arm64'
-            else: suffix = 'amd64'
-            url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-{suffix}.exe'
-            dest = os.path.join(BIN_DIR, 'cloudflared.exe')
-            _download_file(url, dest)
-            return True
-
-        elif env == 'linux':
-            arch = platform.machine()
-            if arch in ('x86_64', 'amd64'): suffix = 'amd64'
-            elif arch in ('aarch64', 'arm64'): suffix = 'arm64'
-            elif arch.startswith('arm'): suffix = 'arm'
-            else: suffix = 'amd64'
-            url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{suffix}'
-            dest = os.path.join(BIN_DIR, 'cloudflared')
-            _download_file(url, dest)
-            os.chmod(dest, 0o755)
-            return True
-
-        elif env == 'macos':
-            arch = platform.machine()
-            suffix = 'arm64' if arch == 'arm64' else 'amd64'
-            url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-{suffix}.tgz'
-            dest_tgz = os.path.join(BIN_DIR, 'cloudflared.tgz')
-            _download_file(url, dest_tgz)
-            import tarfile
-            with tarfile.open(dest_tgz) as tar:
-                tar.extractall(BIN_DIR)
-            os.remove(dest_tgz)
-            os.chmod(os.path.join(BIN_DIR, 'cloudflared'), 0o755)
-            return True
-
+        return download_cloudflared_binary()
     except Exception as e:
         print(f"{Fore.RED}[!] Error instalando cloudflared: {e}{Style.RESET_ALL}")
     return False
@@ -748,7 +748,7 @@ def parse_tunnel_url(line):
             return m.group(0)
     return None
 
-def start_cloudflare_tunnel(port=8080, timeout=30):
+def start_cloudflare_tunnel(port=8080, timeout=30, _allow_update=True):
     cf_path = get_cloudflared_path()
     if not cf_path:
         return None, None
@@ -792,8 +792,27 @@ def start_cloudflare_tunnel(port=8080, timeout=30):
         if url:
             return url, proc
 
-        # No hubo URL: mostramos la salida de cloudflared para diagnóstico.
+        # No hubo URL.
         proc.terminate()
+        output = "\n".join(captured).lower()
+
+        # Un error TLS / de creación del túnel casi siempre significa que el
+        # binario de cloudflared está desactualizado (típico del paquete de
+        # 'pkg' en Termux). Descargamos el oficial más reciente y reintentamos.
+        version_error = ('tls: internal error' in output
+                         or 'failed to request quick tunnel' in output
+                         or 'error unmarshaling quicktunnel' in output)
+        if _allow_update and version_error:
+            print(f"\n{Fore.YELLOW}[*] cloudflared parece desactualizado. "
+                  f"Descargando la versión oficial más reciente...{Style.RESET_ALL}")
+            try:
+                if download_cloudflared_binary():
+                    print(f"{Fore.GREEN}[+] cloudflared actualizado. Reintentando túnel...{Style.RESET_ALL}")
+                    return start_cloudflare_tunnel(port, timeout, _allow_update=False)
+            except Exception as e:
+                print(f"{Fore.RED}[!] No se pudo actualizar cloudflared: {e}{Style.RESET_ALL}")
+
+        # Sin arreglo posible: mostramos la salida de cloudflared para diagnóstico.
         print(f"\n{Fore.RED}[!] Cloudflared no devolvió una URL de túnel.{Style.RESET_ALL}")
         diag = [l for l in captured if l.strip()]
         if diag:
