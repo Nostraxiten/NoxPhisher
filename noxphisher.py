@@ -567,6 +567,16 @@ def get_cloudflared_path():
         local = os.path.join(BIN_DIR, 'cloudflared.exe')
     else:
         local = os.path.join(BIN_DIR, 'cloudflared')
+    # En Termux el binario oficial descargado NO resuelve DNS (no está
+    # parcheado para $PREFIX/etc/resolv.conf), así que preferimos el paquete
+    # instalado vía pkg, que sí funciona.
+    if detect_environment() == 'termux':
+        system_path = shutil.which('cloudflared')
+        if system_path:
+            return system_path
+        if os.path.isfile(local):
+            return local
+        return None
     if os.path.isfile(local):
         return local
     system_path = shutil.which('cloudflared')
@@ -603,14 +613,14 @@ def _download_file(url, dest):
 
 def download_cloudflared_binary():
     """Descarga el binario oficial más reciente de cloudflared en BIN_DIR.
-    En Termux se usa el binario de Linux/ARM en vez del paquete de 'pkg',
-    que suele estar desactualizado y provoca errores TLS en los túneles
-    rápidos ('remote error: tls: internal error')."""
+    NOTA: no se usa en Termux, porque el binario oficial no resuelve DNS en
+    Android (lee /etc/resolv.conf, inaccesible sin root). En Termux se usa el
+    paquete de 'pkg', que está parcheado para $PREFIX/etc/resolv.conf."""
     env = detect_environment()
     os.makedirs(BIN_DIR, exist_ok=True)
     arch = platform.machine().lower()
 
-    if env in ('termux', 'linux', 'ish'):
+    if env in ('linux', 'ish'):
         if arch in ('x86_64', 'amd64'): suffix = 'amd64'
         elif arch in ('aarch64', 'arm64'): suffix = 'arm64'
         elif arch.startswith('arm'): suffix = 'arm'
@@ -642,13 +652,42 @@ def download_cloudflared_binary():
 
     return False
 
+def ensure_cloudflared_termux(upgrade=False):
+    """En Termux instalamos/actualizamos cloudflared vía pkg, porque el binario
+    oficial no resuelve DNS en Android. Con upgrade=True fuerza la actualización
+    (útil cuando la versión instalada da 'tls: internal error')."""
+    # Elimina un binario oficial descargado previamente: en Termux rompe el DNS.
+    stale = os.path.join(BIN_DIR, 'cloudflared')
+    if os.path.isfile(stale):
+        try:
+            os.remove(stale)
+        except Exception:
+            pass
+
+    if shutil.which('cloudflared') and not upgrade:
+        return True
+
+    print(f"\n{Fore.YELLOW}[*] Instalando/actualizando cloudflared vía pkg (Termux)...{Style.RESET_ALL}")
+    try:
+        subprocess.run(['pkg', 'update', '-y'], timeout=180, check=False)
+    except Exception:
+        pass
+    try:
+        subprocess.run(['pkg', 'install', 'cloudflared', '-y'], timeout=180, check=False)
+    except Exception as e:
+        print(f"{Fore.RED}[!] Error con pkg install: {e}{Style.RESET_ALL}")
+    return bool(shutil.which('cloudflared'))
+
 def ensure_cloudflared():
+    env = detect_environment()
+
+    if env == 'termux':
+        return ensure_cloudflared_termux()
+
     if get_cloudflared_path():
         return True
 
-    env = detect_environment()
     print(f"\n{Fore.YELLOW}[*] Instalando cloudflared para [{env}]...{Style.RESET_ALL}")
-
     try:
         if env == 'ish':
             print(f"{Fore.RED}[!] iSH requiere instalación manual de cloudflared vía apk si está disponible.{Style.RESET_ALL}")
@@ -796,18 +835,28 @@ def start_cloudflare_tunnel(port=8080, timeout=30, _allow_update=True):
         proc.terminate()
         output = "\n".join(captured).lower()
 
-        # Un error TLS / de creación del túnel casi siempre significa que el
-        # binario de cloudflared está desactualizado (típico del paquete de
-        # 'pkg' en Termux). Descargamos el oficial más reciente y reintentamos.
-        version_error = ('tls: internal error' in output
-                         or 'failed to request quick tunnel' in output
-                         or 'error unmarshaling quicktunnel' in output)
+        # Un error TLS suele indicar un cloudflared desactualizado. Un error de
+        # DNS (connection refused / lookup) en Termux indica que se está usando
+        # el binario oficial (no resuelve DNS): en ambos casos reinstalamos la
+        # versión adecuada y reintentamos una vez.
+        env = detect_environment()
+        tls_error = 'tls: internal error' in output
+        dns_error = ('connection refused' in output or 'no such host' in output
+                     or 'server misbehaving' in output or 'lookup' in output)
+        quick_error = 'failed to request quick tunnel' in output
+        version_error = tls_error or quick_error or 'error unmarshaling quicktunnel' in output
+
         if _allow_update and version_error:
-            print(f"\n{Fore.YELLOW}[*] cloudflared parece desactualizado. "
-                  f"Descargando la versión oficial más reciente...{Style.RESET_ALL}")
             try:
-                if download_cloudflared_binary():
-                    print(f"{Fore.GREEN}[+] cloudflared actualizado. Reintentando túnel...{Style.RESET_ALL}")
+                if env == 'termux':
+                    print(f"\n{Fore.YELLOW}[*] Reinstalando cloudflared vía pkg (Termux)...{Style.RESET_ALL}")
+                    ok = ensure_cloudflared_termux(upgrade=True)
+                else:
+                    print(f"\n{Fore.YELLOW}[*] cloudflared parece desactualizado. "
+                          f"Descargando la versión oficial más reciente...{Style.RESET_ALL}")
+                    ok = download_cloudflared_binary()
+                if ok:
+                    print(f"{Fore.GREEN}[+] cloudflared listo. Reintentando túnel...{Style.RESET_ALL}")
                     return start_cloudflare_tunnel(port, timeout, _allow_update=False)
             except Exception as e:
                 print(f"{Fore.RED}[!] No se pudo actualizar cloudflared: {e}{Style.RESET_ALL}")
@@ -819,8 +868,12 @@ def start_cloudflare_tunnel(port=8080, timeout=30, _allow_update=True):
             print(f"{Fore.YELLOW}    Salida de cloudflared:{Style.RESET_ALL}")
             for l in diag[-12:]:
                 print(f"      {l}")
-        print(f"{Fore.YELLOW}    Sugerencia: si ves errores de red o 'failed to request "
-              f"quick Tunnel', prueba con Ngrok (opción 2).{Style.RESET_ALL}")
+        if env == 'termux' and (dns_error or tls_error):
+            print(f"{Fore.YELLOW}    En Termux, actualiza cloudflared con: "
+                  f"pkg update && pkg upgrade cloudflared{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}    Sugerencia: si ves errores de red o 'failed to request "
+                  f"quick Tunnel', prueba con Ngrok (opción 2).{Style.RESET_ALL}")
         time.sleep(3)
         return None, None
     except Exception as e:
