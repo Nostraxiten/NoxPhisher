@@ -789,12 +789,14 @@ def parse_tunnel_url(line):
             return m.group(0)
     return None
 
-def _try_cloudflare_once(cf_path, port, timeout):
+def _try_cloudflare_once(cf_path, port, timeout, extra_args=None):
     """Intenta iniciar un túnel Cloudflare una vez. Devuelve (url, proc, output)."""
     import threading
     from queue import Queue, Empty
 
-    cmd  = [cf_path, "tunnel", "--url", f"http://localhost:{port}"]
+    cmd = [cf_path, "tunnel", "--url", f"http://localhost:{port}"]
+    if extra_args:
+        cmd.extend(extra_args)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
 
@@ -818,6 +820,16 @@ def _try_cloudflare_once(cf_path, port, timeout):
             line = q.get(timeout=1)
         except Empty:
             if proc.poll() is not None:
+                # Proceso terminó: drenar las líneas restantes del buffer
+                while True:
+                    try:
+                        line = q.get_nowait()
+                        captured.append(line.rstrip())
+                        url = parse_tunnel_url(line)
+                        if url:
+                            return url, proc, captured
+                    except Empty:
+                        break
                 break
             continue
         captured.append(line.rstrip())
@@ -844,7 +856,7 @@ def _needs_update(captured):
             'no such host' in output or
             'server misbehaving' in output)
 
-def start_cloudflare_tunnel(port=8080, max_retries=4):
+def start_cloudflare_tunnel(port=8080, max_retries=5):
     cf_path = get_cloudflared_path()
     if not cf_path:
         print(f"{Fore.YELLOW}[*] Cloudflared no detectado. Instalando...{Style.RESET_ALL}")
@@ -858,10 +870,13 @@ def start_cloudflare_tunnel(port=8080, max_retries=4):
     updated = False
 
     for attempt in range(1, max_retries + 1):
-        timeout = 30 + (attempt - 1) * 15
+        timeout = 45 + (attempt - 1) * 15
+        extra_args = None
+        if attempt >= 3:
+            extra_args = ["--protocol", "quic"]
         print(f"{Fore.YELLOW}[*] Conectando túnel Cloudflare (intento {attempt}/{max_retries})...{Style.RESET_ALL}")
 
-        url, proc, captured = _try_cloudflare_once(cf_path, port, timeout)
+        url, proc, captured = _try_cloudflare_once(cf_path, port, timeout, extra_args)
         if url:
             print(f"{Fore.GREEN}[+] Túnel Cloudflare establecido.{Style.RESET_ALL}")
             return url, proc
@@ -882,7 +897,7 @@ def start_cloudflare_tunnel(port=8080, max_retries=4):
                 updated = True
 
         if attempt < max_retries:
-            wait = 2 * attempt
+            wait = 3 * attempt
             print(f"{Fore.YELLOW}[*] Reintentando en {wait}s...{Style.RESET_ALL}")
             time.sleep(wait)
 
