@@ -739,8 +739,14 @@ def ensure_ngrok():
         return False
 
 def parse_tunnel_url(line):
-    m = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
-    return m.group(0) if m else None
+    # cloudflared imprime en los logs el endpoint interno
+    # https://api.trycloudflare.com (usado para registrar el túnel), que NO
+    # es la URL pública. La URL real tiene un subdominio aleatorio, así que
+    # descartamos explícitamente el subdominio "api".
+    for m in re.finditer(r'https://([a-zA-Z0-9-]+)\.trycloudflare\.com', line):
+        if m.group(1).lower() != 'api':
+            return m.group(0)
+    return None
 
 def start_cloudflare_tunnel(port=8080):
     cf_path = get_cloudflared_path()
