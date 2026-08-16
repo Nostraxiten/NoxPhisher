@@ -612,26 +612,12 @@ def _download_file(url, dest):
     print()
 
 def download_cloudflared_binary():
-    """Descarga el binario oficial más reciente de cloudflared en BIN_DIR.
-    NOTA: no se usa en Termux, porque el binario oficial no resuelve DNS en
-    Android (lee /etc/resolv.conf, inaccesible sin root). En Termux se usa el
-    paquete de 'pkg', que está parcheado para $PREFIX/etc/resolv.conf."""
+    """Descarga el binario oficial más reciente de cloudflared en BIN_DIR."""
     env = detect_environment()
     os.makedirs(BIN_DIR, exist_ok=True)
     arch = platform.machine().lower()
 
-    if env in ('linux', 'ish'):
-        if arch in ('x86_64', 'amd64'): suffix = 'amd64'
-        elif arch in ('aarch64', 'arm64'): suffix = 'arm64'
-        elif arch.startswith('arm'): suffix = 'arm'
-        else: suffix = 'amd64'
-        url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{suffix}'
-        dest = os.path.join(BIN_DIR, 'cloudflared')
-        _download_file(url, dest)
-        os.chmod(dest, 0o755)
-        return True
-
-    elif env == 'windows':
+    if env == 'windows':
         suffix = 'arm64' if arch == 'arm64' else 'amd64'
         url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-{suffix}.exe'
         dest = os.path.join(BIN_DIR, 'cloudflared.exe')
@@ -650,13 +636,21 @@ def download_cloudflared_binary():
         os.chmod(os.path.join(BIN_DIR, 'cloudflared'), 0o755)
         return True
 
-    return False
+    else:
+        if arch in ('x86_64', 'amd64'): suffix = 'amd64'
+        elif arch in ('aarch64', 'arm64'): suffix = 'arm64'
+        elif arch.startswith('arm'): suffix = 'arm'
+        else: suffix = 'amd64'
+        url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-{suffix}'
+        dest = os.path.join(BIN_DIR, 'cloudflared')
+        _download_file(url, dest)
+        os.chmod(dest, 0o755)
+        return True
 
 def ensure_cloudflared_termux(upgrade=False):
     """En Termux instalamos/actualizamos cloudflared vía pkg, porque el binario
     oficial no resuelve DNS en Android. Con upgrade=True fuerza la actualización
     (útil cuando la versión instalada da 'tls: internal error')."""
-    # Elimina un binario oficial descargado previamente: en Termux rompe el DNS.
     stale = os.path.join(BIN_DIR, 'cloudflared')
     if os.path.isfile(stale):
         try:
@@ -667,16 +661,27 @@ def ensure_cloudflared_termux(upgrade=False):
     if shutil.which('cloudflared') and not upgrade:
         return True
 
-    print(f"\n{Fore.YELLOW}[*] Instalando/actualizando cloudflared vía pkg (Termux)...{Style.RESET_ALL}")
+    print(f"\n{Fore.YELLOW}[*] Instalando cloudflared vía pkg (Termux)...{Style.RESET_ALL}")
     try:
-        subprocess.run(['pkg', 'update', '-y'], timeout=180, check=False)
+        subprocess.run(['pkg', 'update', '-y'], timeout=180, check=False,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
     try:
-        subprocess.run(['pkg', 'install', 'cloudflared', '-y'], timeout=180, check=False)
-    except Exception as e:
-        print(f"{Fore.RED}[!] Error con pkg install: {e}{Style.RESET_ALL}")
-    return bool(shutil.which('cloudflared'))
+        subprocess.run(['pkg', 'install', 'cloudflared', '-y'], timeout=180, check=False,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    if shutil.which('cloudflared'):
+        return True
+
+    print(f"{Fore.YELLOW}[*] pkg no disponible, descargando binario...{Style.RESET_ALL}")
+    try:
+        return download_cloudflared_binary()
+    except Exception:
+        pass
+    return False
 
 def ensure_cloudflared():
     env = detect_environment()
@@ -689,12 +694,9 @@ def ensure_cloudflared():
 
     print(f"\n{Fore.YELLOW}[*] Instalando cloudflared para [{env}]...{Style.RESET_ALL}")
     try:
-        if env == 'ish':
-            print(f"{Fore.RED}[!] iSH requiere instalación manual de cloudflared vía apk si está disponible.{Style.RESET_ALL}")
-            return False
         return download_cloudflared_binary()
-    except Exception as e:
-        print(f"{Fore.RED}[!] Error instalando cloudflared: {e}{Style.RESET_ALL}")
+    except Exception:
+        pass
     return False
 
 def install_ngrok_binary():
@@ -787,99 +789,104 @@ def parse_tunnel_url(line):
             return m.group(0)
     return None
 
-def start_cloudflare_tunnel(port=8080, timeout=30, _allow_update=True):
+def _try_cloudflare_once(cf_path, port, timeout):
+    """Intenta iniciar un túnel Cloudflare una vez. Devuelve (url, proc, output)."""
+    import threading
+    from queue import Queue, Empty
+
+    cmd  = [cf_path, "tunnel", "--url", f"http://localhost:{port}"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+
+    q = Queue()
+
+    def _reader(pipe, out_q):
+        try:
+            for ln in iter(pipe.readline, ''):
+                out_q.put(ln)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_reader, args=(proc.stdout, q), daemon=True)
+    t.start()
+
+    url = None
+    captured = []
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            line = q.get(timeout=1)
+        except Empty:
+            if proc.poll() is not None:
+                break
+            continue
+        captured.append(line.rstrip())
+        url = parse_tunnel_url(line)
+        if url:
+            break
+
+    if url:
+        return url, proc, captured
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+    return None, None, captured
+
+def _needs_update(captured):
+    output = "\n".join(captured).lower()
+    return ('tls: internal error' in output or
+            'failed to request quick tunnel' in output or
+            'error unmarshaling quicktunnel' in output or
+            'connection refused' in output or
+            'no such host' in output or
+            'server misbehaving' in output)
+
+def start_cloudflare_tunnel(port=8080, max_retries=4):
     cf_path = get_cloudflared_path()
     if not cf_path:
-        return None, None
-    try:
-        import threading
-        from queue import Queue, Empty
+        print(f"{Fore.YELLOW}[*] Cloudflared no detectado. Instalando...{Style.RESET_ALL}")
+        if not ensure_cloudflared():
+            return None, None
+        cf_path = get_cloudflared_path()
+        if not cf_path:
+            return None, None
 
-        cmd  = [cf_path, "tunnel", "--url", f"http://localhost:{port}"]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1)
+    env = detect_environment()
+    updated = False
 
-        # Leemos la salida en un hilo para poder aplicar un timeout real:
-        # readline() bloquea, y cloudflared puede tardar en emitir la URL.
-        q = Queue()
+    for attempt in range(1, max_retries + 1):
+        timeout = 30 + (attempt - 1) * 15
+        print(f"{Fore.YELLOW}[*] Conectando túnel Cloudflare (intento {attempt}/{max_retries})...{Style.RESET_ALL}")
 
-        def _reader(pipe, out_q):
-            try:
-                for ln in iter(pipe.readline, ''):
-                    out_q.put(ln)
-            except Exception:
-                pass
-
-        t = threading.Thread(target=_reader, args=(proc.stdout, q), daemon=True)
-        t.start()
-
-        url = None
-        captured = []
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                line = q.get(timeout=1)
-            except Empty:
-                if proc.poll() is not None:
-                    break  # cloudflared terminó sin darnos URL
-                continue
-            captured.append(line.rstrip())
-            url = parse_tunnel_url(line)
-            if url:
-                break
-
+        url, proc, captured = _try_cloudflare_once(cf_path, port, timeout)
         if url:
+            print(f"{Fore.GREEN}[+] Túnel Cloudflare establecido.{Style.RESET_ALL}")
             return url, proc
 
-        # No hubo URL.
-        proc.terminate()
-        output = "\n".join(captured).lower()
-
-        # Un error TLS suele indicar un cloudflared desactualizado. Un error de
-        # DNS (connection refused / lookup) en Termux indica que se está usando
-        # el binario oficial (no resuelve DNS): en ambos casos reinstalamos la
-        # versión adecuada y reintentamos una vez.
-        env = detect_environment()
-        tls_error = 'tls: internal error' in output
-        dns_error = ('connection refused' in output or 'no such host' in output
-                     or 'server misbehaving' in output or 'lookup' in output)
-        quick_error = 'failed to request quick tunnel' in output
-        version_error = tls_error or quick_error or 'error unmarshaling quicktunnel' in output
-
-        if _allow_update and version_error:
+        if not updated and _needs_update(captured):
+            print(f"{Fore.YELLOW}[*] Actualizando cloudflared...{Style.RESET_ALL}")
             try:
                 if env == 'termux':
-                    print(f"\n{Fore.YELLOW}[*] Reinstalando cloudflared vía pkg (Termux)...{Style.RESET_ALL}")
                     ok = ensure_cloudflared_termux(upgrade=True)
                 else:
-                    print(f"\n{Fore.YELLOW}[*] cloudflared parece desactualizado. "
-                          f"Descargando la versión oficial más reciente...{Style.RESET_ALL}")
                     ok = download_cloudflared_binary()
                 if ok:
-                    print(f"{Fore.GREEN}[+] cloudflared listo. Reintentando túnel...{Style.RESET_ALL}")
-                    return start_cloudflare_tunnel(port, timeout, _allow_update=False)
-            except Exception as e:
-                print(f"{Fore.RED}[!] No se pudo actualizar cloudflared: {e}{Style.RESET_ALL}")
+                    new_path = get_cloudflared_path()
+                    if new_path:
+                        cf_path = new_path
+                updated = True
+            except Exception:
+                updated = True
 
-        # Sin arreglo posible: mostramos la salida de cloudflared para diagnóstico.
-        print(f"\n{Fore.RED}[!] Cloudflared no devolvió una URL de túnel.{Style.RESET_ALL}")
-        diag = [l for l in captured if l.strip()]
-        if diag:
-            print(f"{Fore.YELLOW}    Salida de cloudflared:{Style.RESET_ALL}")
-            for l in diag[-12:]:
-                print(f"      {l}")
-        if env == 'termux' and (dns_error or tls_error):
-            print(f"{Fore.YELLOW}    En Termux, actualiza cloudflared con: "
-                  f"pkg update && pkg upgrade cloudflared{Style.RESET_ALL}")
-        else:
-            print(f"{Fore.YELLOW}    Sugerencia: si ves errores de red o 'failed to request "
-                  f"quick Tunnel', prueba con Ngrok (opción 2).{Style.RESET_ALL}")
-        time.sleep(3)
-        return None, None
-    except Exception as e:
-        print(f"\n{Fore.RED}[!] Error iniciando túnel Cloudflare: {e}{Style.RESET_ALL}")
-        time.sleep(2)
-        return None, None
+        if attempt < max_retries:
+            wait = 2 * attempt
+            print(f"{Fore.YELLOW}[*] Reintentando en {wait}s...{Style.RESET_ALL}")
+            time.sleep(wait)
+
+    return None, None
 
 def start_ngrok_tunnel_native(port=8080):
     """Inicia ngrok usando el binario nativo y obtiene la URL pública desde
@@ -1211,7 +1218,6 @@ def run_grabber():
         if not get_cloudflared_path():
             fake_progress("Instalando Cloudflared", steps=15, delay=0.2)
             ensure_cloudflared()
-        spinner("Iniciando túnel Cloudflared...", 2)
         url, proc = start_cloudflare_tunnel(grabber.port)
         tunnel_type = "Cloudflare"
     elif CONFIG['tunnel_choice'] == 2:
@@ -1237,8 +1243,7 @@ def run_grabber():
             generate_qr_terminal(url)
     else:
         url = f"http://{public_ip}:{grabber.port}"
-        print(f"\n{Fore.RED}[!] Sin túnel activo.{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}URL directa (requiere puertos abiertos): {url}{Style.RESET_ALL}\n")
+        print(f"\n{Fore.YELLOW}URL directa (requiere puertos abiertos): {url}{Style.RESET_ALL}\n")
         if CONFIG['generate_qr']:
             generate_qr_terminal(url)
             
