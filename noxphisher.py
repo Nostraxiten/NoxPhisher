@@ -574,6 +574,18 @@ def get_cloudflared_path():
         return system_path
     return None
 
+def get_ngrok_path():
+    if sys.platform == 'win32':
+        local = os.path.join(BIN_DIR, 'ngrok.exe')
+    else:
+        local = os.path.join(BIN_DIR, 'ngrok')
+    if os.path.isfile(local):
+        return local
+    system_path = shutil.which('ngrok')
+    if system_path:
+        return system_path
+    return None
+
 def _download_file(url, dest):
     r = requests.get(url, stream=True, timeout=120)
     r.raise_for_status()
@@ -646,8 +658,59 @@ def ensure_cloudflared():
         print(f"{Fore.RED}[!] Error instalando cloudflared: {e}{Style.RESET_ALL}")
     return False
 
+def install_ngrok_binary():
+    """Descarga el binario nativo de ngrok (usado en Termux/Android donde
+    pyngrok no es compatible: 'android is not a supported system')."""
+    env = detect_environment()
+    os.makedirs(BIN_DIR, exist_ok=True)
+    arch = platform.machine().lower()
+    if arch in ('x86_64', 'amd64'):
+        suffix = 'amd64'
+    elif arch in ('aarch64', 'arm64'):
+        suffix = 'arm64'
+    elif arch.startswith('arm'):
+        suffix = 'arm'
+    else:
+        suffix = 'amd64'
+
+    if env in ('termux', 'linux', 'ish'):
+        url = f'https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-{suffix}.tgz'
+    elif env == 'macos':
+        mac_suffix = 'arm64' if suffix == 'arm64' else 'amd64'
+        url = f'https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-{mac_suffix}.tgz'
+    else:
+        return False
+
+    dest_tgz = os.path.join(BIN_DIR, 'ngrok.tgz')
+    _download_file(url, dest_tgz)
+    import tarfile
+    with tarfile.open(dest_tgz) as tar:
+        tar.extractall(BIN_DIR)
+    os.remove(dest_tgz)
+    ngrok_bin = os.path.join(BIN_DIR, 'ngrok')
+    if os.path.isfile(ngrok_bin):
+        os.chmod(ngrok_bin, 0o755)
+        return True
+    return False
+
 def ensure_ngrok():
     env = detect_environment()
+
+    # En Termux/Android pyngrok no es compatible (falla al importar con
+    # 'android is not a supported system'), así que usamos el binario nativo.
+    if env == 'termux':
+        if get_ngrok_path():
+            return True
+        print(f"{Fore.YELLOW}[*] Descargando binario nativo de ngrok para Termux...{Style.RESET_ALL}")
+        try:
+            if install_ngrok_binary():
+                return True
+            print(f"{Fore.RED}[!] No se pudo instalar el binario de ngrok.{Style.RESET_ALL}")
+            return False
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error al descargar ngrok: {e}{Style.RESET_ALL}")
+            return False
+
     try:
         from pyngrok import ngrok
     except ImportError:
@@ -657,6 +720,15 @@ def ensure_ngrok():
             from pyngrok import ngrok
         except Exception as e:
             print(f"{Fore.RED}[!] Error al instalar pyngrok: {e}{Style.RESET_ALL}")
+            return False
+    except Exception as e:
+        # Cualquier otro fallo de pyngrok (p.ej. sistema no soportado):
+        # intentamos con el binario nativo como respaldo.
+        print(f"{Fore.YELLOW}[*] pyngrok no disponible ({e}). Usando binario nativo...{Style.RESET_ALL}")
+        try:
+            return bool(get_ngrok_path()) or install_ngrok_binary()
+        except Exception as e2:
+            print(f"{Fore.RED}[!] Error al descargar ngrok: {e2}{Style.RESET_ALL}")
             return False
 
     try:
@@ -692,7 +764,62 @@ def start_cloudflare_tunnel(port=8080):
     except Exception:
         return None, None
 
+def start_ngrok_tunnel_native(port=8080):
+    """Inicia ngrok usando el binario nativo y obtiene la URL pública desde
+    su API local (http://127.0.0.1:4040/api/tunnels). Necesario en Termux."""
+    ngrok_path = get_ngrok_path()
+    if not ngrok_path:
+        print(f"\n{Fore.RED}[!] No se encontró el binario de ngrok.{Style.RESET_ALL}")
+        time.sleep(2)
+        return None, None
+
+    if not CONFIG['ngrok_token']:
+        print(f"\n{Fore.RED}[!] No se ha configurado el authtoken de Ngrok.{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}    Regístrate gratis en: https://dashboard.ngrok.com/signup{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}    Configúralo en: Menú > Configuración > [5] Token Ngrok{Style.RESET_ALL}")
+        time.sleep(3)
+        return None, None
+
+    try:
+        subprocess.run(
+            [ngrok_path, "config", "add-authtoken", CONFIG['ngrok_token']],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+        )
+        cmd = [ngrok_path, "http", str(port), "--log", "stdout"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        url = None
+        for _ in range(40):
+            try:
+                r = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=2)
+                for t in r.json().get("tunnels", []):
+                    pub = t.get("public_url", "")
+                    if pub.startswith("https://"):
+                        url = pub
+                        break
+                    if pub.startswith("http://"):
+                        url = pub.replace("http://", "https://")
+                if url:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        if url:
+            return url, proc
+        proc.terminate()
+        print(f"\n{Fore.RED}[!] No se pudo obtener la URL del túnel Ngrok.{Style.RESET_ALL}")
+        time.sleep(2)
+        return None, None
+    except Exception as e:
+        print(f"\n{Fore.RED}[!] Error iniciando túnel Ngrok: {e}{Style.RESET_ALL}")
+        time.sleep(2)
+        return None, None
+
 def start_ngrok_tunnel(port=8080):
+    # En Termux usamos el binario nativo (pyngrok no soporta Android).
+    if detect_environment() == 'termux':
+        return start_ngrok_tunnel_native(port)
     try:
         from pyngrok import ngrok
 
@@ -1066,6 +1193,9 @@ def install_dependencies():
     # 3. Paquetes Python
     print_row(f"{Fore.YELLOW}[3/3] Verificando paquetes Python...{Style.RESET_ALL}", len("[3/3] Verificando paquetes Python..."), width=width)
     pip_packages = {'requests': 'requests', 'colorama': 'colorama', 'qrcode': 'qrcode', 'pyngrok': 'pyngrok', 'PIL': 'pillow'}
+    # pyngrok no es compatible con Termux/Android; se usa el binario nativo.
+    if env == 'termux':
+        pip_packages.pop('pyngrok', None)
     pip_ok = True
     for imp_name, pkg_name in pip_packages.items():
         try:
@@ -1117,11 +1247,19 @@ def system_diagnostics():
     else:
         print_row(f"  Cloudflared:  {Fore.RED}✘ No instalado{Style.RESET_ALL}", len("  Cloudflared:  ✘ No instalado"), width=width)
     
-    try:
-        from pyngrok import ngrok
-        ngrok.install_ngrok()
+    ngrok_ok = False
+    if env == 'termux':
+        ngrok_ok = bool(get_ngrok_path())
+    else:
+        try:
+            from pyngrok import ngrok
+            ngrok.install_ngrok()
+            ngrok_ok = True
+        except Exception:
+            ngrok_ok = bool(get_ngrok_path())
+    if ngrok_ok:
         print_row(f"  Ngrok:        {Fore.GREEN}✔ Instalado{Style.RESET_ALL}", len("  Ngrok:        ✔ Instalado"), width=width)
-    except Exception:
+    else:
         print_row(f"  Ngrok:        {Fore.RED}✘ No instalado{Style.RESET_ALL}", len("  Ngrok:        ✘ No instalado"), width=width)
     
     tk_status = f"{Fore.GREEN}✔ Configurado{Style.RESET_ALL}" if CONFIG['ngrok_token'] else f"{Fore.RED}✘ Sin configurar{Style.RESET_ALL}"
@@ -1134,11 +1272,14 @@ def system_diagnostics():
     print_row(f"{Fore.CYAN}── Paquetes Python ──{Style.RESET_ALL}", len("── Paquetes Python ──"), width=width)
     pkgs = {'requests': 'requests', 'colorama': 'colorama', 'qrcode': 'qrcode',
             'pyngrok': 'pyngrok', 'plyer': 'plyer', 'PIL': 'pillow'}
+    # pyngrok no es compatible con Termux/Android; se usa el binario nativo.
+    if env == 'termux':
+        pkgs.pop('pyngrok', None)
     for imp_name, pkg_name in pkgs.items():
         try:
             __import__(imp_name)
             print_row(f"  {pkg_name.ljust(12)}  {Fore.GREEN}✔{Style.RESET_ALL}", len(f"  {pkg_name.ljust(12)}  ✔"), width=width)
-        except ImportError:
+        except Exception:
             print_row(f"  {pkg_name.ljust(12)}  {Fore.RED}✘{Style.RESET_ALL}", len(f"  {pkg_name.ljust(12)}  ✘"), width=width)
     
     print(f"│{Fore.CYAN}{'─' * (width - 2)}{Style.RESET_ALL}│")

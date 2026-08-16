@@ -3,4 +3,4 @@ qrcode
 pillow
 plyer
 colorama
-pyngrok
+pyngrok  # No compatible con Termux/Android; ahí se usa el binario nativo de ngrok automáticamente
